@@ -117,6 +117,7 @@ class CNN():
             self.createPoolLayer([2, 2])
         xSize = dataSize*filters//2
         ySize = 1000
+        print(self.previousLayer.shape)
         self.previousLayer = tf.reshape(self.previousLayer, [-1, xSize])
         for i in range(0, numOfConnects-1):
             finalOut = self.createConnectedLayer(xSize, ySize, tf.nn.relu, str(counter))
@@ -167,7 +168,7 @@ class CNN():
                 print("EPOCH #%s complete accuacy at %s" %(epoch, test_acc))
 
             print("\nTraining complete!")
-            print(sess.run(accuracy, feed_dict={self.x: mnist.test.images, self.y: mnist.test.labels}))
+            print(sess.run(accuracy, feed_dict={self.x: testData, self.y: testLabels}))
 
     def run(self, data):
         optimiser = tf.train.AdamOptimizer(learning_rate=self.learningRate).minimize(self.minimize)
