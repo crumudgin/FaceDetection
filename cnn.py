@@ -3,7 +3,7 @@ import scipy as sc
 import tensorflow as tf
 from tensorflow.examples.tutorials.mnist import input_data
 
-mnist = input_data.read_data_sets("MNIST_data/", one_hot=True)
+# mnist = input_data.read_data_sets("MNIST_data/", one_hot=True)
 
 class CNN():
 
@@ -24,6 +24,7 @@ class CNN():
         self.finalOutputSize = outputSize
         self.y = tf.placeholder(tf.float32, [None, outputSize], name='y')
         self.x = tf.placeholder(tf.float32, [None, dataSize[0] * dataSize[1]], name='x')
+        self.keepProb = tf.placeholder(tf.float32, name='keepProb')
         self.x_shaped = tf.reshape(self.x, [-1, dataSize[0], dataSize[1], 1])
         self.previousLayer = self.x_shaped
 
@@ -122,8 +123,10 @@ class CNN():
         for i in range(0, numOfConnects-1):
             finalOut = self.createConnectedLayer(xSize, ySize, tf.nn.relu, str(counter))
             xSize = ySize
+        finalOut = tf.layers.dropout(inputs=finalOut, rate=self.keepProb)
         finalOut = self.createConnectedLayer(xSize, self.finalOutputSize, tf.nn.relu, str(counter))
         finalOut = tf.nn.softmax(finalOut)
+
         self.previousLayer = finalOut
         cross_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=finalOut, labels=self.y))
         self.minimize = cross_entropy
@@ -137,6 +140,7 @@ class CNN():
     Parameters: int epochs - the number of rounds of training the network should attempt
     """
     def train(self, epochs, data, labels, testData, testLabels):
+        saver = tf.train.Saver()
         if self.minimize is None:
             print("you need to set the network first")
             return
@@ -147,6 +151,7 @@ class CNN():
 
         with tf.Session() as sess:
             # initialise the variables
+            # saver.restore(sess, "/models/model.ckpt")
             sess.run(initOptimiser)
             total_batch = int(len(labels) / self.batchSize)
             for epoch in range(epochs):
@@ -154,6 +159,7 @@ class CNN():
                 currBatch = 0
                 batch = self.batchSize
                 for i in range(total_batch):
+                    print("starting batch %d of %d" %(i, total_batch))
                     batch_x = data[currBatch:batch]
                     batch_y = labels[currBatch:batch]
                     currBatch = batch
@@ -161,25 +167,28 @@ class CNN():
                     if batch > len(labels):
                         batch = len(labels)
                     _, c = sess.run([optimiser, self.minimize], 
-                                    feed_dict={self.x: batch_x, self.y: batch_y})
+                                    feed_dict={self.x: batch_x, self.y: batch_y, self.keepProb: .4})
                     avg_cost += c / total_batch
                 test_acc = sess.run(accuracy, 
-                               feed_dict={self.x: testData, self.y: testLabels})
+                               feed_dict={self.x: testData, self.y: testLabels, self.keepProb: 1})
                 print("EPOCH #%s complete accuacy at %s" %(epoch, test_acc))
 
             print("\nTraining complete!")
-            print(sess.run(accuracy, feed_dict={self.x: testData, self.y: testLabels}))
+            print(sess.run(accuracy, feed_dict={self.x: testData, self.y: testLabels, self.keepProb: 1}))
+            saver.save(sess, "/models/model.ckpt")
 
     def run(self, data):
+        saver = tf.train.Saver()
         optimiser = tf.train.AdamOptimizer(learning_rate=self.learningRate).minimize(self.minimize)
         prediction = self.previousLayer
         
         initOptimiser = tf.global_variables_initializer()
 
         with tf.Session() as sess:
+            saver.restore(sess, "/models/model.ckpt")
             # initialise the variables
             sess.run(initOptimiser)
                 
             pred = sess.run(prediction,
-                            feed_dict={self.x: data})
+                            feed_dict={self.x: data, self.keepProb: 1})
             print("Prediction: ", pred)
