@@ -28,6 +28,10 @@ class CNN():
         self.x_shaped = tf.reshape(self.x, [-1, dataSize[0], dataSize[1], 1])
         self.previousLayer = self.x_shaped
 
+    def activationSummary(self, x):
+        tf.summary.histogram(x.op.name, x)
+        tf.summary.scalar(x.op.name, tf.nn.zero_fraction(x))
+
     """
     Name: createNewConvLayer
     Description: Creates a "Convolution layer" of the network that will
@@ -106,7 +110,7 @@ class CNN():
     Returns: the cost function
     """
     def setNetwork(self, numOfConvs, numOfBlocks, numOfConnects, dataSize):
-        filters = 32
+        filters = 64
         inputChannels = 1
         counter = 1
         for i in range(0, numOfBlocks):
@@ -116,11 +120,13 @@ class CNN():
                 inputChannels = filters
                 filters *= 2
             self.createPoolLayer([2, 2])
-        xSize = dataSize*filters//2
-        ySize = 1000
         print(self.previousLayer.shape)
-        self.previousLayer = tf.reshape(self.previousLayer, [-1, xSize])
+        self.previousLayer = tf.reshape(self.previousLayer, [-1, 16 * 7 * 7 * 64 * 4])
+        print(self.previousLayer.shape)
+        xSize = 3136 * 16 * 4
+        ySize = 1000
         for i in range(0, numOfConnects-1):
+            print(xSize)
             finalOut = self.createConnectedLayer(xSize, ySize, tf.nn.relu, str(counter))
             xSize = ySize
         finalOut = tf.layers.dropout(inputs=finalOut, rate=self.keepProb)
@@ -128,6 +134,7 @@ class CNN():
         finalOut = tf.nn.softmax(finalOut)
 
         self.previousLayer = finalOut
+        print(finalOut.shape)
         cross_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=finalOut, labels=self.y))
         self.minimize = cross_entropy
         return cross_entropy
@@ -144,22 +151,24 @@ class CNN():
         if self.minimize is None:
             print("you need to set the network first")
             return
-        optimiser = tf.train.AdamOptimizer(learning_rate=self.learningRate).minimize(self.minimize)
-        correct_prediction = tf.equal(tf.argmax(self.y, 1), tf.argmax(self.previousLayer, 1))
-        accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-        initOptimiser = tf.global_variables_initializer()
 
-        with tf.Session() as sess:
+        gpu_options = tf.GPUOptions(allow_growth=True)
+        with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
             # initialise the variables
             # saver.restore(sess, "/models/model.ckpt")
+            optimiser = tf.train.AdamOptimizer(learning_rate=self.learningRate).minimize(self.minimize)
+            correct_prediction = tf.equal(tf.argmax(self.y, 1), tf.argmax(self.previousLayer, 1))
+            accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+            initOptimiser = tf.global_variables_initializer()
             sess.run(initOptimiser)
             total_batch = int(len(labels) / self.batchSize)
             for epoch in range(epochs):
+                print("starting epoch %d" %epoch)
                 avg_cost = 0
                 currBatch = 0
                 batch = self.batchSize
                 for i in range(total_batch):
-                    print("starting batch %d of %d" %(i, total_batch))
+                    # print("starting batch %d of %d" %(i, total_batch))
                     batch_x = data[currBatch:batch]
                     batch_y = labels[currBatch:batch]
                     currBatch = batch
@@ -172,10 +181,13 @@ class CNN():
                 test_acc = sess.run(accuracy, 
                                feed_dict={self.x: testData, self.y: testLabels, self.keepProb: 1})
                 print("EPOCH #%s complete accuacy at %s" %(epoch, test_acc))
+                var_23 = [v for v in tf.global_variables() if v.name == "1_W:0"][0]
+                # print(var_23)
+                # print(sess.run(var_23)[:,:,0])
 
             print("\nTraining complete!")
             print(sess.run(accuracy, feed_dict={self.x: testData, self.y: testLabels, self.keepProb: 1}))
-            saver.save(sess, "/models/model.ckpt")
+            # saver.save(sess, "/models/model.ckpt")
 
     def run(self, data):
         saver = tf.train.Saver()
