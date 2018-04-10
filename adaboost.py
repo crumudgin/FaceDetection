@@ -4,7 +4,6 @@ import math
 
 
 def adaboost(training):
-    features = allFeature(img)
     n = len(training)
     # number of correct images in training data
     m = 5
