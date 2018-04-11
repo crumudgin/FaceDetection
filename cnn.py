@@ -161,9 +161,10 @@ class CNN():
     def trippletAccuracy(self, positive):
         return tf.cast(tf.less(tf.reduce_sum(tf.square(self.anchor - positive), 1), 1), tf.float32)
 
-    def trippletTrain(self, epochs, tripplet, labels, testTripplet):
+    def trippletTrain(self, epochs, tripplet, labels, testTripplet, ):
         gpu_options = tf.GPUOptions(allow_growth=True)
         with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
+            saver = tf.train.Saver()
             total_batch = int(len(labels) / self.batchSize)
             prediction = self.previousLayer
             test_batch = int(len(testTripplet) / self.batchSize)
@@ -172,6 +173,7 @@ class CNN():
             accuracy = self.trippletAccuracy(prediction)
             initOptimiser = tf.global_variables_initializer()
             sess.run(initOptimiser)
+            saver.restore(sess, "/models/model.ckpt")
             # print(positive)
             # print(anchorVal)
             avg_cost = 0
@@ -191,51 +193,52 @@ class CNN():
                 anchorVal = sess.run(prediction, feed_dict={self.x: anchors, self.keepProb: 1})
                 acc = sess.run(accuracy, feed_dict={self.x: positives, self.keepProb: 1, self.anchor: anchorVal})
                 print(acc)
-            for epoch in range(epochs):
-                print("starting epoch %d" %epoch)
-                avg_cost = 0
-                currBatch = 0
-                batch = self.batchSize
-                for i in range(total_batch):
-                    # if i % 100 == 0:
-                        # print("starting batch %d of %d" %(i, total_batch))
-                    batch_x = tripplet[currBatch:batch]
-                    batch_y = labels[currBatch:batch]
-                    currBatch = batch
-                    batch += self.batchSize
-                    if batch > len(labels):
-                        batch = len(labels)
-                    anchors = [i[0] for i in batch_x]
-                    negatives = [i[2] for i in batch_x]
-                    positives = [i[1] for i in batch_x]
-                    anchorVal = sess.run(prediction, feed_dict={self.x: anchors, self.keepProb: 1})
-                    negativeVal = sess.run(prediction, feed_dict={self.x: negatives, self.keepProb: 1})
-                    _, c = sess.run([optimiser, loss], 
-                        feed_dict={self.x:positives, self.keepProb: .4, self.anchor:anchorVal, self.negative:negativeVal})
-                    avg_cost += c / total_batch
-                currBatch = 0
-                batch = self.batchSize
-                for i in range(test_batch):
-                    batch_x = testTripplet[currBatch:batch]
-                    batch_y = labels[currBatch:batch]
-                    currBatch = batch
-                    batch += self.batchSize
-                    if batch > len(labels):
-                        batch = len(labels)
-                    anchors = [i[0] for i in batch_x]
-                    positives = [i[1] for i in batch_x]
-                    anchorVal = sess.run(prediction, feed_dict={self.x: anchors, self.keepProb: 1})
-                    acc = sess.run(accuracy, feed_dict={self.x: positives, self.keepProb: 1, self.anchor: anchorVal})
-                    print(acc)
-                # test_acc = sess.run(trippletAccuracy
-                #                feed_dict={self.x: testData, self.y: testLabels, self.keepProb: 1})
-                print(avg_cost)
-            #     # print("EPOCH #%s complete accuacy at %s" %(epoch, test_acc))
-            #     # var_23 = [v for v in tf.global_variables() if v.name == "1_W:0"][0]
-            #     # print(var_23)
-            #     # print(sess.run(var_23)[:,:,0])
+            # for epoch in range(epochs):
+            #     print("starting epoch %d" %epoch)
+            #     avg_cost = 0
+            #     currBatch = 0
+            #     batch = self.batchSize
+            #     for i in range(total_batch):
+            #         # if i % 100 == 0:
+            #             # print("starting batch %d of %d" %(i, total_batch))
+            #         batch_x = tripplet[currBatch:batch]
+            #         batch_y = labels[currBatch:batch]
+            #         currBatch = batch
+            #         batch += self.batchSize
+            #         if batch > len(labels):
+            #             batch = len(labels)
+            #         anchors = [i[0] for i in batch_x]
+            #         negatives = [i[2] for i in batch_x]
+            #         positives = [i[1] for i in batch_x]
+            #         anchorVal = sess.run(prediction, feed_dict={self.x: anchors, self.keepProb: 1})
+            #         negativeVal = sess.run(prediction, feed_dict={self.x: negatives, self.keepProb: 1})
+            #         _, c = sess.run([optimiser, loss], 
+            #             feed_dict={self.x:positives, self.keepProb: .4, self.anchor:anchorVal, self.negative:negativeVal})
+            #         avg_cost += c / total_batch
+            #     currBatch = 0
+            #     batch = self.batchSize
+            #     for i in range(test_batch):
+            #         batch_x = testTripplet[currBatch:batch]
+            #         batch_y = labels[currBatch:batch]
+            #         currBatch = batch
+            #         batch += self.batchSize
+            #         if batch > len(labels):
+            #             batch = len(labels)
+            #         anchors = [i[0] for i in batch_x]
+            #         positives = [i[1] for i in batch_x]
+            #         anchorVal = sess.run(prediction, feed_dict={self.x: anchors, self.keepProb: 1})
+            #         acc = sess.run(accuracy, feed_dict={self.x: positives, self.keepProb: 1, self.anchor: anchorVal})
+            #         print(acc)
+            #     # test_acc = sess.run(trippletAccuracy
+            #     #                feed_dict={self.x: testData, self.y: testLabels, self.keepProb: 1})
+            #     print(avg_cost)
+            # #     # print("EPOCH #%s complete accuacy at %s" %(epoch, test_acc))
+            # #     # var_23 = [v for v in tf.global_variables() if v.name == "1_W:0"][0]
+            # #     # print(var_23)
+            # #     # print(sess.run(var_23)[:,:,0])
 
-            print("\nTraining complete!")
+            # print("\nTraining complete!")
+            # saver.save(sess, "/models/model.ckpt")
             # print(sess.run(accuracy, feed_dict={self.x: testData, self.y: testLabels, self.keepProb: 1}))
 
     """
