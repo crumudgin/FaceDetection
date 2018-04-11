@@ -5,12 +5,13 @@ import numpy as np
 import cv2
 import os
 import tensorflow as tf 
+from tensorflow.examples.tutorials.mnist import input_data
+
+mnist = input_data.read_data_sets("MNIST_data/", one_hot=True)
 
 def genFaces(path, name, nameVal, data):
-    res = np.array([0, 0, 0, 0])#, -1, -1, -1, -1, -1, -1]
     for filename in os.listdir(path):
-        res[nameVal] = 1
-        data["alligned/%s/%s" %(name, filename)] = res
+        data["alligned/%s/%s" %(name, filename)] = name
         # print(name, data["alligned/%s/%s" %(name, filename)])
     return data
 
@@ -48,29 +49,39 @@ def cvtData(data):
         res.append(img.flatten())
     return res, labels
 
+def formTripplets(data, labels):
+    tripData = []
+    tripLabel = []
+    for i, anchor in enumerate(data):
+        for j, positive in enumerate(data):
+            if labels[i] == labels[j]:
+                for k, negative in enumerate(data):
+                    if labels[i] != labels[k]:
+                        tripData.append((anchor, positive, negative))
+                        tripLabel.append((labels[i], labels[k]))
+    return(tripData, tripLabel)
+
 
 
 data = genAllData()
 data, test = removeTrainingData(data, 10)
 trainingData, trainingLabels = cvtData(data)
+trainingData, trainingLabels = formTripplets(trainingData, trainingLabels)
 testingData, testingLabels = cvtData(test)
-trainingLabels = trainingLabels
+testingData, testingLabels = formTripplets(testingData, testingLabels)
+# print(trainingLabels)
 
-# with tf.Graph().as_default():
-#   globalStep = tf.train.get_or_create_global_step()
-#   data = [tf.cast(i, tf.float16) for i in trainingData]
-#   labels = [tf.cast(i, tf.int64) for i in trainingLabels]
-#   # print(labels)
-#   logits = network.constructNetwork(data, 64*64)
-#   # print(logits[0])
-#   loss = network.loss(logits, labels)
+network = CNN(.001, (224, 224), 128)
+network.setNetwork(1, 3, 2, 84*84, 3136 * 16 * 4)
+network.trippletTrain(10, trainingData, trainingLabels, testingData)
+# network.train(1, trainingData, trainingLabels, testingData, testingLabels)
 
-    # trainOp = network.train(loss, globalStep)
-face = cv2.imread("trainer/zac/zac2.jpg", 1)
-# print(face.shape)
-network = CNN(.001, (224, 224), 4)
-network.setNetwork(1, 3, 2, 84*84)
-network.train(100, trainingData, trainingLabels, testingData, testingLabels)
-# network.run([trainingData[0]])
-# print(trainingLabels[0])
-# -1.00021213e-02
+# trainingData = mnist.train.images
+# trainingLabels = np.asarray(mnist.train.labels, dtype=np.int32)
+# testingData = mnist.test.images
+# testingLabels = np.asarray(mnist.test.labels, dtype=np.int32)
+# print(trainingLabels)
+
+# network = CNN(.001, (28, 28), 10)
+# network.setNetwork(1, 3, 2, 84*84, 1024 * 4)
+# network.train(10, trainingData, trainingLabels, testingData, testingLabels)
