@@ -22,10 +22,10 @@ class CNN():
         self.batchSize = 100
         self.minimize = None
         self.finalOutputSize = outputSize
-        self.y = tf.placeholder(tf.float32, [None, outputSize], name='y')
-        self.x = tf.placeholder(tf.float32, [None, dataSize[0] * dataSize[1] * 3], name='x')
+        self.y = tf.placeholder(tf.float32, [self.batchSize], name='y')
+        self.x = tf.placeholder(tf.float32, [None, dataSize[0] * dataSize[1] * 1], name='x')
         self.keepProb = tf.placeholder(tf.float32, name='keepProb')
-        self.x_shaped = tf.reshape(self.x, [-1, dataSize[0], dataSize[1], 3])
+        self.x_shaped = tf.reshape(self.x, [-1, dataSize[0], dataSize[1], 1])
         self.previousLayer = self.x_shaped
         self.anchor = tf.placeholder(tf.float32, [self.batchSize, 128], name='anchor')
         self.negative = tf.placeholder(tf.float32, [self.batchSize, 128], name='negative')
@@ -115,7 +115,7 @@ class CNN():
     """
     def setNetwork(self, numOfConvs, numOfBlocks, numOfConnects, dataSize, xSize):
         filters = 64
-        inputChannels = 3
+        inputChannels = 1
         counter = 1
         for i in range(0, numOfBlocks):
             for j in range(0, numOfConvs):
@@ -147,51 +147,113 @@ class CNN():
         # return cross_entropy
 
     
-    # def trippletLoss(self, anchor, positive, negative, margin):
-    #     sameFace = tf.reduce_sum(tf.square(anchor - positive), 1)
-    #     diffFace = tf.reduce_sum(tf.square(anchor - negative), 1)
-    #     loss = tf.reduce_mean(tf.maximum(0.0, sameFace + diffFace + margin))
-    #     return loss
+    def pairwiseDist(self, embedings, squared=False):
+        dot = tf.matmul(embedings, tf.transpose(embedings))
+        squaredNorm = tf.diag_part(dot)
+        distance = tf.expand_dims(squaredNorm, 0) -2.0 * dot + tf.expand_dims(squaredNorm, 1)
+        distance = tf.maximum(distance, 0.0)
+        if not squared:
+            mask = tf.to_float(tf.equal(distance, 0.0))
+            distance = distance+mask*1e-16
+            distance = tf.sqrt(distance)
+            distance = distance * (1.0 - mask)
+        return distance
 
-    def trippletLoss(self, positive):
-        sameFace = tf.reduce_sum(tf.square(self.anchor - positive), 1)
-        diffFace = tf.reduce_sum(tf.square(self.anchor - self.negative), 1)
-        loss = tf.maximum((sameFace - diffFace) + .5, 0.0)
-        return tf.reduce_mean(loss), tf.reduce_mean(sameFace), tf.reduce_mean(diffFace)
 
-    def trippletAccuracy(self, positive):
-        return tf.less(tf.reduce_sum(tf.square(self.anchor - positive), 1), 1)
+    def getAnchorPositiveMask(self, labels):
+        indices_equal = tf.cast(tf.eye(tf.shape(labels)[0]), tf.bool)
+        indices_not_equal = tf.logical_not(indices_equal)
 
-    def trippletTrain(self, epochs, tripplet, labels, testTripplet, sess):
+        # Check if labels[i] == labels[j]
+        # Uses broadcasting where the 1st argument has shape (1, batch_size) and the 2nd (batch_size, 1)
+        labels_equal = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
+
+        # Combine the two masks
+        mask = tf.logical_and(indices_not_equal, labels_equal)
+
+        return mask
+
+
+    def getAnchorNegativeMask(self, labels):
+        """Return a 2D mask where mask[a, n] is True iff a and n have distinct labels.
+        Args:
+            labels: tf.int32 `Tensor` with shape [batch_size]
+        Returns:
+            mask: tf.bool `Tensor` with shape [batch_size, batch_size]
+        """
+        # Check if labels[i] != labels[k]
+        # Uses broadcasting where the 1st argument has shape (1, batch_size) and the 2nd (batch_size, 1)
+        labels_equal = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
+
+        mask = tf.logical_not(labels_equal)
+
+        return mask
+
+
+    def getTripletMask(self, labels):
+        """Return a 3D mask where mask[a, p, n] is True iff the triplet (a, p, n) is valid.
+        A triplet (i, j, k) is valid if:
+            - i, j, k are distinct
+            - labels[i] == labels[j] and labels[i] != labels[k]
+        Args:
+            labels: tf.int32 `Tensor` with shape [batch_size]
+        """
+        # Check that i, j and k are distinct
+        indices_equal = tf.cast(tf.eye(tf.shape(labels)[0]), tf.bool)
+        indices_not_equal = tf.logical_not(indices_equal)
+        i_not_equal_j = tf.expand_dims(indices_not_equal, 2)
+        i_not_equal_k = tf.expand_dims(indices_not_equal, 1)
+        j_not_equal_k = tf.expand_dims(indices_not_equal, 0)
+
+        distinct_indices = tf.logical_and(tf.logical_and(i_not_equal_j, i_not_equal_k), j_not_equal_k)
+
+
+        # Check if labels[i] == labels[j] and labels[i] != labels[k]
+        label_equal = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
+        i_equal_j = tf.expand_dims(label_equal, 2)
+        i_equal_k = tf.expand_dims(label_equal, 1)
+
+        valid_labels = tf.logical_and(i_equal_j, tf.logical_not(i_equal_k))
+
+        # Combine the two masks
+        mask = tf.logical_and(distinct_indices, valid_labels)
+
+        return mask
+
+
+    def batchHard(self, embedings, labels, margin=1.0, squared=False):
+        dist = self.pairwiseDist(embedings, squared=squared)
+        maskAnchorPositive = self.getAnchorPositiveMask(labels)
+        maskAnchorPositive = tf.to_float(maskAnchorPositive)
+        positiveAnchorDist = tf.multiply(maskAnchorPositive, dist)
+        hardestPositive = tf.reduce_max(positiveAnchorDist, axis=1, keepdims=True)
+
+        maskAnchorNegative = self.getAnchorNegativeMask(labels)
+        maskAnchorNegative = tf.to_float(maskAnchorNegative)
+        maxAnchorNegative = tf.reduce_max(dist, axis=1, keepdims=True)
+        anchorNegativeDist = dist + maxAnchorNegative * (1.0 - maxAnchorNegative)
+        hardestNegative = tf.reduce_max(anchorNegativeDist, axis=1, keepdims=True)
+
+        trippletLoss = tf.maximum(hardestPositive - hardestNegative + margin, 0.0)
+        return tf.reduce_mean(trippletLoss)
+
+    def tripletTrain(self, epochs, data, labels, testData, testLabels, anchors, anchorLabels, sess):
         saver = tf.train.Saver()
         total_batch = int(len(labels) / self.batchSize)
         prediction = self.finalOut
-        test_batch = int(len(testTripplet) / self.batchSize)
-        loss, sameFace, diffFace = self.trippletLoss(prediction)
-        optimiser = tf.train.GradientDescentOptimizer(learning_rate=self.learningRate).minimize(loss)
-        accuracy = self.trippletAccuracy(prediction)
+        test_batch = int(len(testData) / self.batchSize)
+        loss = tf.contrib.losses.metric_learning.triplet_semihard_loss(self.y, self.finalOut)
+        # loss = self.batchHard(self.finalOut, self.y, 1.0)
+        optimiser = tf.train.AdamOptimizer(learning_rate=self.learningRate).minimize(loss)
+        initOptimiser = tf.global_variables_initializer()
+        sess.run(initOptimiser)
+        # accuracy = self.trippletAccuracy(prediction)
         # saver.restore(sess, "/models/new_model.ckpt")
-        avg_cost = 0
-        currBatch = 0
+        self.loadFaces(sess, anchors, anchorLabels)
         batch = self.batchSize
-        lossSum = 0
-        for i in range(test_batch):
-            batch_x = testTripplet[currBatch:batch]
-            batch_y = labels[currBatch:batch]
-            currBatch = batch
-            batch += self.batchSize
-            if batch > len(labels):
-                batch = len(labels)
-            anchors = [i[0] for i in batch_x]
-            positives = [i[1] for i in batch_x]
-            negatives = [i[2] for i in batch_x]
-            anchorVal = sess.run(prediction, feed_dict={self.x: anchors, self.keepProb: 1})
-            negativeVal = sess.run(prediction, feed_dict={self.x: negatives, self.keepProb: 1})
-            # print(anchorVal)
-            acc = sess.run(loss, feed_dict={self.x: positives, self.keepProb: 1, self.anchor: anchorVal, self.negative:negativeVal})
-            lossSum += acc
-        print(lossSum/test_batch)
-        lossSum = 0
+        currBatch = 0
+        print("initial testing")
+        self.tripletError(sess, testData, testLabels)
         for epoch in range(epochs):
             print("starting epoch %d" %epoch)
             avg_cost = 0
@@ -200,46 +262,25 @@ class CNN():
             for i in range(total_batch):
                 if i % 100 == 0:
                     print("starting batch %d of %d" %(i, total_batch))
-                batch_x = tripplet[currBatch:batch]
+                batch_x = data[currBatch:batch]
                 batch_y = labels[currBatch:batch]
                 currBatch = batch
                 batch += self.batchSize
                 if batch > len(labels):
                     batch = len(labels)
-                anchors = [i[0] for i in batch_x]
-                negatives = [i[2] for i in batch_x]
-                positives = [i[1] for i in batch_x]
-                anchorVal = sess.run(prediction, feed_dict={self.x: anchors, self.keepProb: 1})
-                negativeVal = sess.run(prediction, feed_dict={self.x: negatives, self.keepProb: 1})
-                _, c = sess.run([optimiser, loss], 
-                    feed_dict={self.x:positives, self.keepProb: .4, self.anchor:anchorVal, self.negative:negativeVal})
-                avg_cost += c / total_batch
-            currBatch = 0
-            batch = self.batchSize
-            for i in range(test_batch):
-                batch_x = testTripplet[currBatch:batch]
-                batch_y = labels[currBatch:batch]
-                currBatch = batch
-                batch += self.batchSize
-                if batch > len(labels):
-                    batch = len(labels)
-                anchors = [i[0] for i in batch_x]
-                positives = [i[1] for i in batch_x]
-                negatives = [i[2] for i in batch_x]
-                anchorVal = sess.run(prediction, feed_dict={self.x: anchors, self.keepProb: 1})
-                negativeVal = sess.run(prediction, feed_dict={self.x: negatives, self.keepProb: 1})
-                # print(anchorVal)
-                acc = sess.run(loss, feed_dict={self.x: positives, self.keepProb: 1, self.anchor: anchorVal, self.negative: negativeVal})
-                lossSum += acc
-            print(lossSum/test_batch)
-            print(avg_cost)
+                # _, c = sess.run([optimiser, loss], 
+                #     feed_dict={self.x:batch_x, self.y: batch_y, self.keepProb: .4})
+                # print(c)
+                
 
         print("\nTraining complete!")
-        saver.save(sess, "/models/new_model.ckpt")
+        # saver.save(sess, "/models/new_model.ckpt")
 
     def trippletRun(self, sess, image, prediction):
+        initOptimiser = tf.global_variables_initializer()
+        sess.run(initOptimiser)
         saver = tf.train.Saver()
-        saver.restore(sess, "/models/new_model.ckpt")
+        # saver.restore(sess, "/models/new_model.ckpt")
         pred = sess.run(prediction, feed_dict={self.x: image, self.keepProb: 1})
         diff = None
         diffName = None
@@ -257,7 +298,9 @@ class CNN():
     def loadFaces(self, sess, examples, names):
         saver = tf.train.Saver()
         prediction = self.finalOut
-        saver.restore(sess, "/models/new_model.ckpt")
+        initOptimiser = tf.global_variables_initializer()
+        sess.run(initOptimiser)
+        # saver.restore(sess, "/models/new_model.ckpt")
         self.faces = []
         self.names = names
         print(self.names)
@@ -265,4 +308,14 @@ class CNN():
             feature = sess.run(prediction, feed_dict={self.x: [face], self.keepProb: 1})
             self.faces.append(feature)
 
-    
+    def tripletError(self, sess, data, labels):
+        prediction = self.finalOut
+        fails = 0
+        for i in range(len(labels)):
+            features = sess.run(prediction, feed_dict={self.x:data, self.keepProb: 1})
+            measure = tf.less(tf.reduce_sum(tf.square(features - self.faces[i]), 1), 1.0)
+            if sess.run(measure):
+                fails += 1
+
+        print(fails/len(labels))
+
