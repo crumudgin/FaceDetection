@@ -19,7 +19,7 @@ class CNN():
     """
     def __init__(self, learningRate, dataSize, outputSize):
         self.learningRate = learningRate
-        self.batchSize = 25
+        self.batchSize = 100
         self.minimize = None
         self.finalOutputSize = outputSize
         self.y = tf.placeholder(tf.float32, [None, outputSize], name='y')
@@ -53,8 +53,8 @@ class CNN():
     """
     def createNewConvLayer(self, numInputChannels, numFilters, filterShape, name, nonLiniarity=tf.nn.relu):
         convFiltShape = [filterShape[0], filterShape[1], numInputChannels, numFilters]
-        w = tf.Variable(tf.truncated_normal(convFiltShape, stddev=.03), name=name+'_W')
-        bias = tf.Variable(tf.truncated_normal([numFilters]), name=name+'_b')
+        w = tf.Variable(tf.random_uniform(convFiltShape), name=name+'_W')
+        bias = tf.Variable(tf.random_uniform([numFilters]), name=name+'_b')
 
         outLayer = tf.nn.conv2d(self.previousLayer, w, [1, 1, 1, 1], padding='SAME')
 
@@ -96,8 +96,8 @@ class CNN():
              applied to it
     """
     def createConnectedLayer(self, x, z, nonLiniarity, name):
-        wd = tf.Variable(tf.truncated_normal([x, z], stddev=.03), name='wd' + name)
-        bd = tf.Variable(tf.truncated_normal([z], stddev=0.01), name='bd' + name)
+        wd = tf.Variable(tf.random_uniform([x, z]), name='wd' + name)
+        bd = tf.Variable(tf.random_uniform([z]), name='bd' + name)
         dense_layer = tf.matmul(self.previousLayer, wd) + bd
         self.previousLayer = nonLiniarity(dense_layer)
         return dense_layer
@@ -136,7 +136,8 @@ class CNN():
             xSize = ySize
         finalOut = tf.layers.dropout(inputs=finalOut, rate=self.keepProb)
         finalOut = self.createConnectedLayer(xSize, self.finalOutputSize, tf.nn.relu, str(counter))
-        finalOut = tf.nn.softmax(finalOut)
+        finalOut = tf.nn.l2_normalize(finalOut)
+        # finalOut = tf.nn.softmax(finalOut)
 
         self.finalOut = finalOut
         # print(finalOut.shape)
@@ -169,12 +170,11 @@ class CNN():
         loss, sameFace, diffFace = self.trippletLoss(prediction)
         optimiser = tf.train.GradientDescentOptimizer(learning_rate=self.learningRate).minimize(loss)
         accuracy = self.trippletAccuracy(prediction)
-        initOptimiser = tf.global_variables_initializer()
-        sess.run(initOptimiser)
-        saver.restore(sess, "/models/model.ckpt")
+        # saver.restore(sess, "/models/new_model.ckpt")
         avg_cost = 0
         currBatch = 0
         batch = self.batchSize
+        lossSum = 0
         for i in range(test_batch):
             batch_x = testTripplet[currBatch:batch]
             batch_y = labels[currBatch:batch]
@@ -184,9 +184,14 @@ class CNN():
                 batch = len(labels)
             anchors = [i[0] for i in batch_x]
             positives = [i[1] for i in batch_x]
+            negatives = [i[2] for i in batch_x]
             anchorVal = sess.run(prediction, feed_dict={self.x: anchors, self.keepProb: 1})
-            acc = sess.run(accuracy, feed_dict={self.x: positives, self.keepProb: 1, self.anchor: anchorVal})
-            print(acc)
+            negativeVal = sess.run(prediction, feed_dict={self.x: negatives, self.keepProb: 1})
+            # print(anchorVal)
+            acc = sess.run(loss, feed_dict={self.x: positives, self.keepProb: 1, self.anchor: anchorVal, self.negative:negativeVal})
+            lossSum += acc
+        print(lossSum/test_batch)
+        lossSum = 0
         for epoch in range(epochs):
             print("starting epoch %d" %epoch)
             avg_cost = 0
@@ -220,103 +225,44 @@ class CNN():
                     batch = len(labels)
                 anchors = [i[0] for i in batch_x]
                 positives = [i[1] for i in batch_x]
+                negatives = [i[2] for i in batch_x]
                 anchorVal = sess.run(prediction, feed_dict={self.x: anchors, self.keepProb: 1})
-                print(anchorVal)
-                acc = sess.run(accuracy, feed_dict={self.x: positives, self.keepProb: 1, self.anchor: anchorVal})
-                print(acc)
+                negativeVal = sess.run(prediction, feed_dict={self.x: negatives, self.keepProb: 1})
+                # print(anchorVal)
+                acc = sess.run(loss, feed_dict={self.x: positives, self.keepProb: 1, self.anchor: anchorVal, self.negative: negativeVal})
+                lossSum += acc
+            print(lossSum/test_batch)
             print(avg_cost)
 
         print("\nTraining complete!")
-        saver.save(sess, "/models/model.ckpt")
+        saver.save(sess, "/models/new_model.ckpt")
 
     def trippletRun(self, sess, image, prediction):
         saver = tf.train.Saver()
-        # saver.restore(sess, "/models/model.ckpt")
+        saver.restore(sess, "/models/new_model.ckpt")
         pred = sess.run(prediction, feed_dict={self.x: image, self.keepProb: 1})
-        diff = 0
+        diff = None
         diffName = None
-        # for i in range(len(self.names)):
-        print(pred)
-        return pred
-            # print(self.faces[i])
-            # currDiff = self.faces[i] - pred
-            # print(sess.run(currDiff))
+        for i in range(len(self.names)):
+            currDiff = tf.reduce_sum(tf.square(pred - self.faces[i]), 1)
+            currDiff = sess.run(currDiff)
+            if diff is None or currDiff < diff:
+                print(currDiff)
+                diff = currDiff
+                diffName = self.names[i]
+        print(diffName)
 
 
 
     def loadFaces(self, sess, examples, names):
         saver = tf.train.Saver()
-        prediction = self.previousLayer
-        initOptimiser = tf.global_variables_initializer()
-        sess.run(initOptimiser)
-        saver.restore(sess, "/models/model.ckpt")
+        prediction = self.finalOut
+        saver.restore(sess, "/models/new_model.ckpt")
         self.faces = []
         self.names = names
+        print(self.names)
         for face in examples:
             feature = sess.run(prediction, feed_dict={self.x: [face], self.keepProb: 1})
             self.faces.append(feature)
 
-
-    """
-    Name: train
-    Description: performs training on the network with the goal of minimizing the cost
-                 function
-    Parameters: int epochs - the number of rounds of training the network should attempt
-    """
-    def train(self, epochs, data, labels, testData, testLabels):
-        saver = tf.train.Saver()
-        if self.minimize is None:
-            print("you need to set the network first")
-            return
-
-        gpu_options = tf.GPUOptions(allow_growth=True)
-        with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
-            # initialise the variables
-            # saver.restore(sess, "/models/model.ckpt")
-            optimiser = tf.train.GradientDescentOptimizer(learning_rate=self.learningRate).minimize(self.minimize)
-            correct_prediction = tf.equal(tf.argmax(self.y, 1), tf.argmax(self.previousLayer, 1))
-            accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-            initOptimiser = tf.global_variables_initializer()
-            sess.run(initOptimiser)
-            saver.restore(sess, "/models/model.ckpt")
-            total_batch = int(len(labels) / self.batchSize)
-            for epoch in range(epochs):
-                print("starting epoch %d" %epoch)
-                avg_cost = 0
-                currBatch = 0
-                batch = self.batchSize
-                for i in range(total_batch):
-                    if i % 100 == 0:
-                        print("starting batch %d of %d" %(i, total_batch))
-                    batch_x = data[currBatch:batch]
-                    batch_y = labels[currBatch:batch]
-                    currBatch = batch
-                    batch += self.batchSize
-                    if batch > len(labels):
-                        batch = len(labels)
-                    _, c = sess.run([optimiser, self.minimize], 
-                                    feed_dict={self.x: batch_x, self.y: batch_y, self.keepProb: .4})
-                    avg_cost += c / total_batch
-                test_acc = sess.run(accuracy, 
-                               feed_dict={self.x: testData, self.y: testLabels, self.keepProb: 1})
-                print("EPOCH #%s complete accuacy at %s" %(epoch, test_acc))
-
-            print("\nTraining complete!")
-            print(sess.run(accuracy, feed_dict={self.x: testData, self.y: testLabels, self.keepProb: 1}))
-            saver.save(sess, "/models/model.ckpt")
-
-    def run(self, data):
-        saver = tf.train.Saver()
-        optimiser = tf.train.AdamOptimizer(learning_rate=self.learningRate).minimize(self.minimize)
-        prediction = self.previousLayer
-        
-        initOptimiser = tf.global_variables_initializer()
-
-        with tf.Session() as sess:
-            saver.restore(sess, "/models/model.ckpt")
-            # initialise the variables
-            sess.run(initOptimiser)
-                
-            pred = sess.run(prediction,
-                            feed_dict={self.x: data, self.keepProb: 1})
-            print("Prediction: ", pred)
+    
