@@ -19,7 +19,7 @@ class CNN():
     """
     def __init__(self, learningRate, dataSize, outputSize):
         self.learningRate = learningRate
-        self.batchSize = 100
+        self.batchSize = 800
         self.minimize = None
         self.finalOutputSize = outputSize
         self.y = tf.placeholder(tf.float32, [self.batchSize], name='y')
@@ -238,6 +238,7 @@ class CNN():
         return tf.reduce_mean(trippletLoss)
 
     def tripletTrain(self, epochs, data, labels, testData, testLabels, anchors, anchorLabels, sess):
+        print(len(testData), self.batchSize)
         saver = tf.train.Saver()
         total_batch = int(len(labels) / self.batchSize)
         prediction = self.finalOut
@@ -248,33 +249,57 @@ class CNN():
         initOptimiser = tf.global_variables_initializer()
         sess.run(initOptimiser)
         # accuracy = self.trippletAccuracy(prediction)
-        # saver.restore(sess, "/models/new_model.ckpt")
-        self.loadFaces(sess, anchors, anchorLabels)
+        # saver.restore(sess, "/models/face_model.ckpt")
         batch = self.batchSize
         currBatch = 0
         print("initial testing")
-        self.tripletError(sess, testData, testLabels)
+        # self.loadFaces(sess, anchors, anchorLabels)
+        # self.tripletError(sess, testData, testLabels)
+        currBatch = 0
+        batch = self.batchSize
+        err = 0
+        for i in range(test_batch):
+            if i % 100 == 0:
+                print("starting test batch %d of %d" %(i, total_batch))
+            batch_x = testData[currBatch:batch]
+            batch_y = testLabels[currBatch:batch]
+            currBatch = batch
+            batch += self.batchSize
+            err += sess.run(loss, feed_dict={self.x:batch_x, self.y: batch_y, self.keepProb: .4})
+        print(1 - err/test_batch)
         for epoch in range(epochs):
             print("starting epoch %d" %epoch)
             avg_cost = 0
             currBatch = 0
             batch = self.batchSize
             for i in range(total_batch):
-                if i % 100 == 0:
-                    print("starting batch %d of %d" %(i, total_batch))
+                # if i % 100 == 0:
+                #     print("starting batch %d of %d" %(i, total_batch))
                 batch_x = data[currBatch:batch]
                 batch_y = labels[currBatch:batch]
                 currBatch = batch
                 batch += self.batchSize
                 if batch > len(labels):
                     batch = len(labels)
-                # _, c = sess.run([optimiser, loss], 
-                #     feed_dict={self.x:batch_x, self.y: batch_y, self.keepProb: .4})
+                _, c = sess.run([optimiser, loss], 
+                    feed_dict={self.x:batch_x, self.y: batch_y, self.keepProb: .4})
                 # print(c)
+        currBatch = 0
+        batch = self.batchSize
+        err = 0
+        for i in range(test_batch):
+            if i % 100 == 0:
+                print("starting test batch %d of %d" %(i, total_batch))
+            batch_x = testData[currBatch:batch]
+            batch_y = testLabels[currBatch:batch]
+            currBatch = batch
+            batch += self.batchSize
+            err += sess.run(loss, feed_dict={self.x:batch_x, self.y: batch_y, self.keepProb: .4})
+        print(1 - err/test_batch)
                 
 
         print("\nTraining complete!")
-        # saver.save(sess, "/models/new_model.ckpt")
+        saver.save(sess, "/models/face_model.ckpt")
 
     def trippletRun(self, sess, image, prediction):
         initOptimiser = tf.global_variables_initializer()
@@ -300,7 +325,7 @@ class CNN():
         prediction = self.finalOut
         initOptimiser = tf.global_variables_initializer()
         sess.run(initOptimiser)
-        # saver.restore(sess, "/models/new_model.ckpt")
+        saver.restore(sess, "/models/face_model.ckpt")
         self.faces = []
         self.names = names
         print(self.names)
@@ -310,12 +335,26 @@ class CNN():
 
     def tripletError(self, sess, data, labels):
         prediction = self.finalOut
-        fails = 0
+        initOptimiser = tf.global_variables_initializer()
+        sess.run(initOptimiser)
+        saver = tf.train.Saver()
+        saver.restore(sess, "/models/face_model.ckpt")
+        wins = 0
+        features = sess.run(self.finalOut, feed_dict={self.x:data, self.keepProb: 1})
+        # measure = tf.reduce_mean(tf.reduce_sum(tf.square(features - self.faces), 1))
+        measure = tf.reduce_sum(tf.square(features - self.faces), 2)
+        measure = sess.run(measure)
         for i in range(len(labels)):
-            features = sess.run(prediction, feed_dict={self.x:data, self.keepProb: 1})
-            measure = tf.less(tf.reduce_sum(tf.square(features - self.faces[i]), 1), 1.0)
-            if sess.run(measure):
-                fails += 1
-
-        print(fails/len(labels))
+            diff = 100
+            diffName = None
+            for name in range(len(self.names)):
+                if measure[name, i] < diff:
+                    diff = measure[name, i]
+                    diffName = self.names[name]
+            if diffName == labels[i]:
+                # print("yup", diffName, labels[i])
+                wins += 1
+            # else:
+            #     print("Nope", diffName, labels[i])
+        print(wins/len(labels))
 
