@@ -3,6 +3,13 @@ import scipy as sc
 import tensorflow as tf
 from tensorflow.examples.tutorials.mnist import input_data
 
+_BATCH_NORM_DECAY = 0.997
+_BATCH_NORM_EPSILON = 1e-5
+DEFAULT_VERSION = 2
+DEFAULT_DTYPE = tf.float32
+CASTABLE_TYPES = (tf.float16,)
+ALLOWED_TYPES = (DEFAULT_DTYPE,) + CASTABLE_TYPES
+
 # mnist = input_data.read_data_sets("MNIST_data/", one_hot=True)
 
 class CNN():
@@ -17,24 +24,29 @@ class CNN():
                 tuple dataSize - the shape of the input data to the network
                 int outputSize - the shape of the output for the network
     """
-    def __init__(self, learningRate, dataSize, outputSize):
+    def __init__(self, learningRate, dataSize, classifiers, outputSize):
         self.learningRate = learningRate
-        self.batchSize = 800
+        self.batchSize = 100
         self.minimize = None
         self.finalOutputSize = outputSize
-        self.y = tf.placeholder(tf.float32, [self.batchSize], name='y')
-        self.x = tf.placeholder(tf.float32, [None, dataSize[0] * dataSize[1] * 1], name='x')
+        self.y = tf.placeholder(tf.int64, [self.batchSize], name='y')
+        self.x = tf.placeholder(tf.float32, [self.batchSize, dataSize[0], dataSize[1], 3], name='x')
         self.keepProb = tf.placeholder(tf.float32, name='keepProb')
-        self.x_shaped = tf.reshape(self.x, [-1, dataSize[0], dataSize[1], 1])
-        self.previousLayer = self.x_shaped
-        self.anchor = tf.placeholder(tf.float32, [self.batchSize, 128], name='anchor')
-        self.negative = tf.placeholder(tf.float32, [self.batchSize, 128], name='negative')
-        self.batchSpot = 0
-        self.outputs = []
+        self.previousLayer = None
+        self.occurences = np.zeros((classifiers))
+        self.sums = np.zeros((classifiers, 128))
 
-    def activationSummary(self, x):
-        tf.summary.histogram(x.op.name, x)
-        tf.summary.scalar(x.op.name, tf.nn.zero_fraction(x))
+    def activationSummary(self, var):
+        pass
+        # with tf.name_scope('summaries'):
+        #     mean = tf.reduce_mean(var)
+        #     tf.summary.scalar('mean', mean)
+        #     with tf.name_scope('stddev'):
+        #       stddev = tf.sqrt(tf.reduce_mean(tf.square(var - mean)))
+        #     tf.summary.scalar('stddev', stddev)
+        #     # tf.summary.scalar('max', tf.reduce_max(var))
+        #     # tf.summary.scalar('min', tf.reduce_min(var))
+        #     tf.summary.histogram('histogram', var)
 
     """
     Name: createNewConvLayer
@@ -53,14 +65,20 @@ class CNN():
     """
     def createNewConvLayer(self, numInputChannels, numFilters, filterShape, name, nonLiniarity=tf.nn.relu):
         convFiltShape = [filterShape[0], filterShape[1], numInputChannels, numFilters]
-        w = tf.Variable(tf.random_uniform(convFiltShape), name=name+'_W')
-        bias = tf.Variable(tf.random_uniform([numFilters]), name=name+'_b')
+        with tf.name_scope("conv_layer"):
+            w = tf.Variable(tf.random_uniform(convFiltShape, minval=-1, maxval=1), name=name+'_W')
+            # self.activationSummary(w)
+            bias = tf.Variable(tf.random_uniform([numFilters], minval=-1, maxval=1), name=name+'_b')
+            # self.activationSummary(bias)
 
-        outLayer = tf.nn.conv2d(self.previousLayer, w, [1, 1, 1, 1], padding='SAME')
+            outLayer = tf.nn.conv2d(self.previousLayer, w, [1, 1, 1, 1], padding='SAME')
+            # self.activationSummary(outLayer)
 
-        outLayer += bias
+            outLayer += bias
+            # self.activationSummary(outLayer)
 
-        outLayer = nonLiniarity(outLayer)
+            # outLayer = nonLiniarity(outLayer)
+            # self.activationSummary(outLayer)
         self.previousLayer = outLayer
         return outLayer
 
@@ -96,11 +114,56 @@ class CNN():
              applied to it
     """
     def createConnectedLayer(self, x, z, nonLiniarity, name):
-        wd = tf.Variable(tf.random_uniform([x, z]), name='wd' + name)
-        bd = tf.Variable(tf.random_uniform([z]), name='bd' + name)
-        dense_layer = tf.matmul(self.previousLayer, wd) + bd
+        with tf.name_scope("dense_layer"):
+            wd = tf.Variable(tf.random_uniform([x, z]), name='wd' + name)
+            # self.activationSummary(wd)
+            bd = tf.Variable(tf.random_uniform([z]), name='bd' + name)
+            # self.activationSummary(bd)
+            dense_layer = tf.matmul(self.previousLayer, wd) + bd
+            # self.activationSummary(dense_layer)
         self.previousLayer = nonLiniarity(dense_layer)
         return dense_layer
+
+    def batchNorm(self, inputs):
+        """Performs a batch normalization using a standard set of parameters."""
+        # We set fused=True for a significant performance boost. See
+        # https://www.tensorflow.org/performance/performance_guide#common_fused_ops
+        return tf.layers.batch_normalization(
+            inputs=inputs, axis=3,
+            momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, center=True,
+            scale=True, fused=True)
+
+    def conv2d_fixed_padding(inputs, filters, kernel_size, strides, data_format):
+        """Strided 2-D convolution with explicit padding."""
+        # The padding is consistent and is based only on `kernel_size`, not on the
+        # dimensions of `inputs` (as opposed to using `tf.layers.conv2d` alone).
+        if strides > 1:
+            inputs = fixed_padding(inputs, kernel_size, data_format)
+
+        return tf.layers.conv2d(
+            inputs=inputs, filters=filters, kernel_size=kernel_size, strides=strides,
+            padding=('SAME' if strides == 1 else 'VALID'), use_bias=False,
+            kernel_initializer=tf.variance_scaling_initializer(),
+            data_format=data_format)
+
+    def resBlock(self, chanels, filters, name, skip=True):
+        shortcut = tf.identity(self.previousLayer)
+        self.previousLayer = self.batchNorm(self.previousLayer)
+        self.previousLayer = tf.nn.relu(self.previousLayer)
+        # self.previousLayer = tf.nn.batch_normalization(self.previousLayer, 2, 2, 2, 2, 1e-5)
+        self.createNewConvLayer(filters, filters, [3, 3], "conv_1_%s" %name)
+        self.previousLayer = self.batchNorm(self.previousLayer)
+        self.previousLayer = tf.nn.relu(self.previousLayer)
+        self.createNewConvLayer(filters, filters, [3, 3], "conv_2_%s" %name)
+        self.previousLayer = self.batchNorm(self.previousLayer)
+        # self.createNewConvLayer(filters, filters, [1, 1], "conv_3_%s" %name)
+        if skip:
+            self.previousLayer += shortcut
+        self.previousLayer = tf.nn.relu(self.previousLayer)
+
+
+
+
 
     """
     Name: setNetwork
@@ -113,38 +176,49 @@ class CNN():
                                     of the network
     Returns: the cost function
     """
-    def setNetwork(self, numOfConvs, numOfBlocks, numOfConnects, dataSize, xSize):
-        filters = 64
-        inputChannels = 1
+    def setNetwork(self, numOfConvs, numOfBlocks, numOfConnects, xSize):
+        filters = 32
+        inputChannels = 3
         counter = 1
-        for i in range(0, numOfBlocks):
-            for j in range(0, numOfConvs):
-                if counter == 1:
-                    self.previousLayer = self.x_shaped
-                self.createNewConvLayer(inputChannels, filters, [5, 5], str(counter))
-                counter += 1
-                inputChannels = filters
-                filters *= 2
-            self.createPoolLayer([2, 2])
+        self.previousLayer = self.x
+        self.createNewConvLayer(inputChannels, filters, [7,7], "conv_1")
+        self.previousLayer = tf.nn.relu(self.previousLayer)
+        # self.previousLayer = tf.nn.lrn(self.previousLayer)
+        self.createPoolLayer([3, 3])
+        self.resBlock(inputChannels, filters, "1")
+        self.resBlock(inputChannels, filters, "2")
+        self.resBlock(inputChannels, filters, "3")
+        self.resBlock(inputChannels, filters, "4")
+        # self.resBlock(inputChannels, filters, "5")
+        # self.resBlock(filters * 2, filters * 2, "6")
+        self.createPoolLayer([7, 7], tf.nn.avg_pool)
+        # for i in range(0, numOfBlocks):
+        #     for j in range(0, numOfConvs):
+        #         if counter == 1:
+        #             self.previousLayer = self.x
+        #         self.createNewConvLayer(inputChannels, filters, [5, 5], str(counter))
+        #         counter += 1
+        #         inputChannels = filters
+        #         filters *= 2
+        #     self.createPoolLayer([2, 2])
+        #     # self.previousLayer = tf.nn.lrn(self.previousLayer)
+        # print(self.previousLayer.shape)
+        shape = self.previousLayer.shape
         print(self.previousLayer.shape)
-        self.previousLayer = tf.reshape(self.previousLayer, [-1, xSize ])
+        self.previousLayer = tf.reshape(self.previousLayer, [-1, shape[1] * shape[2] * shape[3]])
         print(self.previousLayer.shape)
         ySize = 128
-        for i in range(0, numOfConnects-1):
-            print(xSize)
-            finalOut = self.createConnectedLayer(xSize, ySize, tf.nn.relu, str(counter))
-            xSize = ySize
-        finalOut = tf.layers.dropout(inputs=finalOut, rate=self.keepProb)
-        finalOut = self.createConnectedLayer(xSize, self.finalOutputSize, tf.nn.relu, str(counter))
+        finalOut = self.previousLayer
+        # for i in range(0, numOfConnects-1):
+        #     print(xSize)
+        #     finalOut = self.createConnectedLayer((401408), ySize, tf.nn.relu, str(counter))
+        #     xSize = ySize
+        # finalOut = self.createConnectedLayer(100352, 128, tf.nn.relu, str(counter))
+        # finalOut = tf.layers.dropout(inputs=finalOut, rate=self.keepProb)
+        finalOut = self.createConnectedLayer(100352, self.finalOutputSize, tf.nn.relu, str(counter))
         finalOut = tf.nn.l2_normalize(finalOut)
-        # finalOut = tf.nn.softmax(finalOut)
 
         self.finalOut = finalOut
-        # print(finalOut.shape)
-        # cross_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=finalOut, labels=self.y))
-        # self.minimize = cross_entropy
-        # self.outputs.append(finalOut)
-        # return cross_entropy
 
     
     def pairwiseDist(self, embedings, squared=False):
@@ -237,69 +311,22 @@ class CNN():
         trippletLoss = tf.maximum(hardestPositive - hardestNegative + margin, 0.0)
         return tf.reduce_mean(trippletLoss)
 
-    def tripletTrain(self, epochs, data, labels, testData, testLabels, anchors, anchorLabels, sess):
-        print(len(testData), self.batchSize)
-        saver = tf.train.Saver()
-        total_batch = int(len(labels) / self.batchSize)
-        prediction = self.finalOut
-        test_batch = int(len(testData) / self.batchSize)
-        loss = tf.contrib.losses.metric_learning.triplet_semihard_loss(self.y, self.finalOut)
-        # loss = self.batchHard(self.finalOut, self.y, 1.0)
-        optimiser = tf.train.AdamOptimizer(learning_rate=self.learningRate).minimize(loss)
-        initOptimiser = tf.global_variables_initializer()
-        sess.run(initOptimiser)
-        # accuracy = self.trippletAccuracy(prediction)
-        # saver.restore(sess, "/models/face_model.ckpt")
-        batch = self.batchSize
-        currBatch = 0
-        print("initial testing")
-        # self.loadFaces(sess, anchors, anchorLabels)
-        # self.tripletError(sess, testData, testLabels)
-        currBatch = 0
-        batch = self.batchSize
-        err = 0
-        for i in range(test_batch):
-            if i % 100 == 0:
-                print("starting test batch %d of %d" %(i, total_batch))
-            batch_x = testData[currBatch:batch]
-            batch_y = testLabels[currBatch:batch]
-            currBatch = batch
-            batch += self.batchSize
-            err += sess.run(loss, feed_dict={self.x:batch_x, self.y: batch_y, self.keepProb: .4})
-        print(1 - err/test_batch)
-        for epoch in range(epochs):
-            print("starting epoch %d" %epoch)
-            avg_cost = 0
-            currBatch = 0
-            batch = self.batchSize
-            for i in range(total_batch):
-                # if i % 100 == 0:
-                #     print("starting batch %d of %d" %(i, total_batch))
-                batch_x = data[currBatch:batch]
-                batch_y = labels[currBatch:batch]
-                currBatch = batch
-                batch += self.batchSize
-                if batch > len(labels):
-                    batch = len(labels)
-                _, c = sess.run([optimiser, loss], 
-                    feed_dict={self.x:batch_x, self.y: batch_y, self.keepProb: .4})
-                # print(c)
-        currBatch = 0
-        batch = self.batchSize
-        err = 0
-        for i in range(test_batch):
-            if i % 100 == 0:
-                print("starting test batch %d of %d" %(i, total_batch))
-            batch_x = testData[currBatch:batch]
-            batch_y = testLabels[currBatch:batch]
-            currBatch = batch
-            batch += self.batchSize
-            err += sess.run(loss, feed_dict={self.x:batch_x, self.y: batch_y, self.keepProb: .4})
-        print(1 - err/test_batch)
-                
+    def batchAll(self, labels, embedings, margin, squared=False):
+        dist = self.pairwiseDist(embedings, squared=squared)
+        anchorPosDist = tf.expand_dims(dist, 2)
+        anchorNegDist = tf.expand_dims(dist, 1)
+        loss = anchorPosDist - anchorNegDist + margin
+        mask = self.getTripletMask(labels)
+        mask = tf.to_float(mask)
+        loss = tf.multiply(mask, loss)
+        loss = tf.maximum(loss, 0.0)
+        triplets = tf.to_float(tf.greater(loss, 1e-16))
+        posTriplets = tf.reduce_sum(triplets)
+        negTriplets = tf.reduce_sum(mask)
+        ratio = posTriplets/(negTriplets + 1e-16)
+        loss = tf.reduce_sum(loss) / (posTriplets + 1e-16)
+        return loss, ratio
 
-        print("\nTraining complete!")
-        saver.save(sess, "/models/face_model.ckpt")
 
     def trippletRun(self, sess, image, prediction):
         initOptimiser = tf.global_variables_initializer()
@@ -333,6 +360,7 @@ class CNN():
             feature = sess.run(prediction, feed_dict={self.x: [face], self.keepProb: 1})
             self.faces.append(feature)
 
+
     def tripletError(self, sess, data, labels):
         prediction = self.finalOut
         initOptimiser = tf.global_variables_initializer()
@@ -358,3 +386,115 @@ class CNN():
             #     print("Nope", diffName, labels[i])
         print(wins/len(labels))
 
+
+    def readTensor(self, dataType, ranomise):
+        features = {"%s/label" %dataType: tf.FixedLenFeature([], tf.int64),
+               "%s/image" %dataType: tf.FixedLenFeature([], tf.string)}
+
+        queue = tf.train.string_input_producer(["%s.tfrecords" %dataType], num_epochs=None, shuffle=ranomise)
+        reader = tf.TFRecordReader()
+        _, example = reader.read(queue)
+        features = tf.parse_single_example(example, features = features)
+        label = features["%s/label" %dataType]
+        image = features["%s/image" %dataType]
+        if ranomise:
+            imagesBatch, labelsBatch = tf.train.shuffle_batch(
+                [image, label], batch_size=self.batchSize,
+                capacity=self.batchSize*8,
+                min_after_dequeue=self.batchSize,
+                num_threads=8,
+                allow_smaller_final_batch=True)
+        else:
+            imagesBatch, labelsBatch = tf.train.batch(
+                [image, label], 
+                batch_size=self.batchSize,
+                num_threads=1,
+                capacity=self.batchSize*8,
+                allow_smaller_final_batch=True)
+        image = tf.decode_raw(imagesBatch, tf.int8)
+        image = tf.reshape(image, [-1, 224, 224, 3])
+        return labelsBatch, image
+
+    def calcAverage(self, image, label):
+        self.occurences[label] += 1
+        self.sums[label] += image
+
+
+    def train(self, sess, totalBatch, testBatch, epochs):
+        labelsBatch, imagesBatch = self.readTensor("train", True)
+        testLabels, testImages = self.readTensor("train", False)
+        self.setNetwork(1, 3, 2, 56*56*64)
+        saver = tf.train.Saver()
+        # loss, err = self.batchAll(self.y, self.finalOut, 2.0, True)
+        # with tf.name_scope("loss"):
+        loss = tf.contrib.losses.metric_learning.triplet_semihard_loss(self.y, self.finalOut)
+            # tf.summary.scalar('mean', tf.reduce_mean(loss))
+        optimiser = tf.train.AdamOptimizer(learning_rate=self.learningRate).minimize(loss)
+
+        # merged = tf.summary.merge_all()
+        trainWriter = tf.summary.FileWriter("/tb/summary/train", sess.graph)
+        init = tf.global_variables_initializer()
+        sess.run(init)
+        saver.restore(sess, "/models/face_model_v6.ckpt")
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+        for j in range(epochs):
+            print("starting epoch: %d of %d" %(j+1,epochs))
+            cost = 0
+            for i in range(totalBatch):
+                img, label = sess.run([imagesBatch, labelsBatch])
+                # print(label)
+                if i % 100 == 0:
+                    print("starting batch: %d of %d" %(i, totalBatch))
+                _, c = sess.run([optimiser, loss], feed_dict={self.x: img, self.y: label, self.keepProb: .8})
+                cost += c
+            #     print(error)
+            print(cost/totalBatch)
+                    # trainWriter.add_summary(summary, i)
+        saver.save(sess, "/models/face_model_v7.ckpt")
+        wins = 0
+        embeds = []
+        for i in range(testBatch):
+            if i % 100 == 0:
+                print("calculating avreges for batch: %d of %d" %(i, testBatch))
+            img, label = sess.run([testImages, testLabels])
+            # print(label[i])
+            embedings = sess.run(self.finalOut, feed_dict={self.x: img, self.y: label, self.keepProb: 1.0})
+            # print(embedings[i])
+            for k in range(self.batchSize):
+                self.calcAverage(embedings[k], label[k])
+            embeds.append(embedings)
+        for k in range(self.sums.shape[0]):
+            if self.occurences[k] == 0:
+                self.sums[k] = 0
+            else:
+                self.sums[k] = self.sums[k] / self.occurences[k]
+                # print(k)
+                # print(self.occurences[k])
+                # print(self.sums[k])
+        for i in range(testBatch):
+            if i % 100 == 0:
+                print("testing batch: %d of %d" %(i, testBatch))
+            img, label = sess.run([testImages, testLabels])
+            # embedings = sess.run(self.finalOut, feed_dict={self.x: img, self.y: label, self.keepProb: 1.0})
+            embs = tf.placeholder("float32", shape=(128,))
+            dist = tf.reduce_sum(tf.square(self.sums - embs), 1)
+            for k in range(self.batchSize):
+                diff = None
+                diffName = None
+                diffs = sess.run(dist, feed_dict={embs:embeds[i][k]})
+                for j in range(diffs.shape[0]):
+                    currDiff = diffs[j]
+                    if diff is None or currDiff < diff:
+                        diff = currDiff
+                        diffName = j
+                if diffName == label[k]:
+                    print("Correct: ", diffName, label[k])
+                    wins += 1
+                else:
+                    print("Incorrect: ", diffName, label[k])
+        print(wins/(testBatch*self.batchSize))
+
+
+        coord.request_stop()
+        coord.join(threads)
