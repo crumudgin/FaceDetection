@@ -59,6 +59,11 @@ from os.path import isfile, join, isdir
 
 
 def aligment(image):
+    """
+    align image of passed to train the neural network properly
+    :param image: image to rotate
+    :return: rotated image
+    """
     detector = dlib.get_frontal_face_detector()
     predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
     fa = FaceAligner(predictor, desiredFaceWidth=256)
@@ -85,18 +90,26 @@ def readImageFromFolder(name):
 
 
 def main():
+    # read images from folder
     images = readImageFromFolder("face")
     count = 0
+    # for each image in images array
     for img in images:
+        # split name to get naem of person
         name = img.split("\\")[1]
+        # image type .png , .jpeg
         imgName = img.split("\\")[2]
-        directory = "trainer/aligned/" + name + str("/")
+        # create new image to put folder
+        directory = "trainer/aligned/"+ name + str("/")
+        # if directory is doesn't exist make one
         if not os.path.exists(directory):
             os.makedirs(directory)
+        # read image
         img = cv2.imread(img)
+        # align the image
         alignedFace = aligment(img)
+        # write that image to he directory
         cv2.imwrite(directory + imgName, alignedFace)
         count += 1
-
-
+        
 main()

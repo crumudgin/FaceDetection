@@ -3,8 +3,7 @@ import numpy as np
 from enum import Enum
 import integrate
 import cv2
-
-
+# feature representation of haar feature
 class Features(Enum):
     # 1,2 means in two vertical divide row in one , divide col in two
     #      (2,1)         (2,2)       (1,2)        (1,3)          (3,1)
@@ -22,30 +21,49 @@ class Features(Enum):
     FOUR_VERTICAL = [2, 2]
 
 class Haar(object):
+
     def __init__(self, topLeft, bottomRight, feature):
+        '''
+        class constructor
+        :param topLeft: top left point (x,y)
+        :param bottomRight:  bottomright point (x,y)
+        :param feature: feature which is of type Feature
+        '''
+        # initialize
         self.topLeft = topLeft
         self.bottomRight = bottomRight
         self.feature = feature
 
+
     def getAreaDiff(self, intImage):
+        """
+        get area differnt of differnt feature
+        :param intImage: integrate image of the given freature
+        :return: area difference of black and white region of the feature
+        """
+        # if it is two horizontal feature type
         if self.feature == Features.TWO_HORIZONTAL:
             blackRegion = integrate.regionArea(intImage, self.topLeft, (self.bottomRight[0]/2, self.bottomRight[1]))
             whiteRegion = integrate.regionArea(intImage, (self.bottomRight[0]/2, self.bottomRight[1]), self.bottomRight)
             return blackRegion - whiteRegion
+        # if it is two vertical feature type
         elif self.feature == Features.TWO_VERTICAL:
             blackRegion = integrate.regionArea(intImage, (self.topLeft[0], self.bottomRight[1]/2), (self.bottomRight[0], self.bottomRight[1]/2))
             whiteRegion = integrate.regionArea(intImage, (self.topLeft[0], self.bottomRight[1]), self.bottomRight)
             return blackRegion - whiteRegion
+        # if it is three horizontal feature type
         elif self.feature == Features.THREE_HORIZONTAL:
             firstRegion = integrate.regionArea(intImage, self.topLeft, (self.bottomRight[0] / 3, self.bottomRight[1]))
             secondRegion = integrate.regionArea(intImage, (self.bottomRight[0] / 3, self.topLeft[1]), (self.bottomRight[0] / 3 * 2, self.bottomRight[1]))
             thirdRegion = integrate.regionArea(intImage, (self.bottomRight[0] / 3 * 2, self.topLeft[1]), self.bottomRight)
             return secondRegion - firstRegion - thirdRegion
+        # if it is three vertical feature type
         elif self.feature == Features.THREE_VERTICAL:
             firstRegion = integrate.regionArea(intImage, self.topLeft, (self.bottomRight[0], self.bottomRight[1] / 3))
             secondRegion = integrate.regionArea(intImage, (self.topLeft[1], self.bottomRight[1] / 3), (self.bottomRight[0], self.bottomRight[1] / 3 * 2))
             thirdRegion = integrate.regionArea(intImage, (self.topLeft[1], self.bottomRight[1] / 3 * 2), self.bottomRight)
             return secondRegion - firstRegion - thirdRegion
+        # if it is four vertical feature type
         elif self.feature == Features.FOUR_VERTICAL:
             firstRegion = integrate.regionArea(intImage, self.topLeft, (self.bottomRight[0] / 2, self.bottomRight[1] / 2))
             secondRegion = integrate.regionArea(intImage, (self.topLeft[0], self.bottomRight[1] / 2), (self.bottomRight[0] / 2, self.bottomRight[1]))
@@ -55,6 +73,11 @@ class Haar(object):
 
 
 def allFeature(img):
+    """
+    return all feature in the image given integrate version of the image
+    :param img: integrate version of the image
+    :return: return collection of all features
+    """
     allFeatures = []
     count = 0
     # for each feature
@@ -70,12 +93,12 @@ def allFeature(img):
     return allFeatures
 
 
-img = np.ones((24, 24))
 
-c = allFeature(img)
-
+# debugging code
+# img = np.ones((24, 24))
+# c = allFeature(img)
+# print(len(c))
 # fea = list(range(len(c)
-
 # topLeft = (0,0)
 # bottomRight = (10,10)
 
